@@ -22,6 +22,12 @@ _AMBER  = "#f59e0b"
 _GREEN  = "#22c55e"
 _RED    = "#ef4444"
 
+# Semi-transparent versions for gauge / area fills (rgba required by Plotly 6+)
+_RED_A   = "rgba(239, 68,  68,  0.13)"
+_AMBER_A = "rgba(245, 158, 11,  0.13)"
+_GREEN_A = "rgba(34,  197, 94,  0.13)"
+_PURPLE_A= "rgba(99,  102, 241, 0.13)"
+
 _LAYOUT = dict(
     paper_bgcolor=_PAPER,
     plot_bgcolor=_BG,
@@ -210,12 +216,12 @@ def match_score_gauge(score: float) -> go.Figure:
         gauge=dict(
             axis=dict(range=[0, 100], tickfont=dict(color=_TEXT)),
             bar=dict(color=_PURPLE),
-            bgcolor="rgba(30,27,75,0.5)",
+            bgcolor="rgba(30, 27, 75, 0.5)",
             bordercolor="#2d2b55",
             steps=[
-                dict(range=[0, 45],  color="#ef444422"),
-                dict(range=[45, 70], color="#f59e0b22"),
-                dict(range=[70, 100], color="#22c55e22"),
+                dict(range=[0, 45],  color=_RED_A),
+                dict(range=[45, 70], color=_AMBER_A),
+                dict(range=[70, 100], color=_GREEN_A),
             ],
             threshold=dict(
                 line=dict(color=_GREEN, width=3),

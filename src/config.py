@@ -25,16 +25,50 @@ ADZUNA_COUNTRY_MAP = {
     "Singapore":        "sg",
 }
 
-# ── RSS Job Feed URLs ─────────────────────────────────────────────────────────
+# ── RSS Remote Job Feeds ──────────────────────────────────────────────────────
+# Keys are short + distinct so Streamlit multiselect doesn't truncate
 RSS_FEEDS = {
-    "We Work Remotely – All":       "https://weworkremotely.com/remote-jobs.rss",
-    "We Work Remotely – Dev/Eng":   "https://weworkremotely.com/categories/remote-programming-jobs.rss",
-    "We Work Remotely – Design":    "https://weworkremotely.com/categories/remote-design-jobs.rss",
-    "We Work Remotely – Data/AI":   "https://weworkremotely.com/categories/remote-data-science-jobs.rss",
-    "Remote.co":                    "https://remote.co/remote-jobs/feed/",
-    "Remotive":                     "https://remotive.com/remote-jobs/feed",
-    "JustRemote":                   "https://justremote.co/feed",
-    "Remote OK":                    "https://remoteok.com/remote-jobs.rss",
+    "WeWorkRemotely – All":     "https://weworkremotely.com/remote-jobs.rss",
+    "WeWorkRemotely – Dev":     "https://weworkremotely.com/categories/remote-programming-jobs.rss",
+    "WeWorkRemotely – Design":  "https://weworkremotely.com/categories/remote-design-jobs.rss",
+    "WeWorkRemotely – Data/AI": "https://weworkremotely.com/categories/remote-data-science-jobs.rss",
+    "Remote.co":                "https://remote.co/remote-jobs/feed/",
+    "Remotive":                 "https://remotive.com/remote-jobs/feed",
+    "JustRemote":               "https://justremote.co/feed",
+    "RemoteOK":                 "https://remoteok.com/remote-jobs.rss",
+}
+
+# ── Australian & Global Job Boards (Scraped) ──────────────────────────────────
+SEEK_BASE_URL    = "https://www.seek.com.au"
+JORA_BASE_URL    = "https://au.jora.com"
+INDEED_BASE_URL  = "https://au.indeed.com"
+
+SEEK_LOCATION_MAP = {
+    "Australia":    "All-Australia",
+    "Sydney":       "Sydney-NSW",
+    "Melbourne":    "Melbourne-VIC",
+    "Brisbane":     "Brisbane-QLD",
+    "Perth":        "Perth-WA",
+    "Adelaide":     "Adelaide-SA",
+    "Canberra":     "Canberra-ACT",
+    "Gold Coast":   "Gold-Coast-QLD",
+    "Newcastle":    "Newcastle-NSW",
+    "Ballarat":     "Ballarat-VIC",
+    "Geelong":      "Geelong-VIC",
+}
+
+# Browser-like headers for scraping
+SCRAPE_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept-Language": "en-AU,en;q=0.9",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Connection": "keep-alive",
+    "DNT": "1",
 }
 
 # ── Skills Taxonomy ───────────────────────────────────────────────────────────
@@ -56,18 +90,23 @@ TECH_SKILLS = [
     # Databases
     "postgresql","mysql","mongodb","redis","elasticsearch","dynamodb","snowflake",
     "bigquery","databricks","oracle","mssql",
-    # Security
+    # Security & Networking
     "cybersecurity","penetration testing","soc","siem","firewalls","network security",
+    "cisco","fortinet","palo alto","splunk","nessus","wireshark","vulnerability",
+    "incident response","threat intelligence","iam","zero trust","endpoint",
     # Other Tech
     "agile","scrum","jira","confluence","product management","ux","ui",
-    "figma","sketch","adobe xd","blockchain","solidity","web3",
+    "figma","sketch","adobe xd","blockchain","solidity","web3","itil","itsm",
+    "service desk","helpdesk","active directory","microsoft 365","office 365",
+    "sharepoint","vmware","hyper-v","virtualization","windows server",
 ]
 
 SOFT_SKILLS = [
     "leadership","communication","teamwork","problem solving","critical thinking",
     "time management","adaptability","creativity","collaboration","mentoring",
     "project management","stakeholder management","negotiation","presentation",
-    "analytical","detail-oriented","self-motivated","remote work",
+    "analytical","detail-oriented","self-motivated","remote work","customer service",
+    "documentation","reporting","training","coaching",
 ]
 
 ALL_SKILLS = TECH_SKILLS + SOFT_SKILLS
@@ -79,11 +118,14 @@ JOB_TITLE_KEYWORDS = [
     "data engineer","data analyst","ml engineer","machine learning engineer",
     "ai engineer","devops engineer","sre","platform engineer","cloud engineer",
     "product manager","project manager","ux designer","ui designer",
-    "security engineer","cybersecurity analyst","network engineer","solutions architect",
-    "architect","cto","cio","vp engineering","head of engineering","tech lead",
-    "engineering manager","scrum master","business analyst","systems analyst",
-    "database administrator","it manager","it support","helpdesk","qa engineer",
-    "test engineer","automation engineer","embedded engineer","firmware engineer",
+    "security engineer","cybersecurity analyst","cyber security","network engineer",
+    "solutions architect","architect","cto","cio","vp engineering",
+    "head of engineering","tech lead","engineering manager","scrum master",
+    "business analyst","systems analyst","database administrator","it manager",
+    "it support","helpdesk","help desk","service desk","it technician",
+    "qa engineer","test engineer","automation engineer","embedded engineer",
+    "firmware engineer","desktop support","systems administrator","network administrator",
+    "cloud architect","security analyst","penetration tester","soc analyst",
 ]
 
 # ── Experience Level Heuristics ────────────────────────────────────────────────
