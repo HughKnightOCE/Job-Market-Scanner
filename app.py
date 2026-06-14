@@ -472,6 +472,18 @@ with tab_profile:
 
         col_info, col_meta = st.columns([2, 1])
         with col_info:
+            # Pre-compute HTML snippets (backslash escapes not allowed inside f-string expressions)
+            edu_html = "".join(
+                f'<span style="background:#8b5cf622;color:#c4b5fd;border:1px solid #8b5cf655;'
+                f'padding:4px 14px;border-radius:99px;font-size:0.8rem;font-weight:600;">{e}</span>'
+                for e in profile.get("education", [])
+            )
+            summary_text = profile.get("summary", "")
+            summary_html = (
+                f'<div style="margin-top:14px;font-size:0.85rem;color:#94a3b8;line-height:1.6;">'
+                f'{summary_text}</div>'
+            ) if summary_text else ""
+
             st.markdown(
                 f"""
 <div style="background:linear-gradient(135deg,#1e1b4b,#1a1a2e);border:1px solid #2d2b55;
@@ -488,12 +500,9 @@ with tab_profile:
     <span style="background:#06b6d422;color:#22d3ee;border:1px solid #06b6d455;
                  padding:4px 14px;border-radius:99px;font-size:0.8rem;font-weight:600;">
       {profile.get('experience_years',0)} yrs experience</span>
-    {''.join(
-        f\'<span style="background:#8b5cf622;color:#c4b5fd;border:1px solid #8b5cf655;padding:4px 14px;border-radius:99px;font-size:0.8rem;font-weight:600;">{e}</span>\'
-        for e in profile.get("education", [])
-    )}
+    {edu_html}
   </div>
-  {f\'<div style="margin-top:14px;font-size:0.85rem;color:#94a3b8;line-height:1.6;">{profile.get("summary","")}</div>\' if profile.get("summary") else ""}
+  {summary_html}
 </div>
 """,
                 unsafe_allow_html=True,
