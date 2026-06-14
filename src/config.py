@@ -7,26 +7,25 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# ── API Keys (loaded from .env or entered via UI) ─────────────────────────────
+# ── API Keys ──────────────────────────────────────────────────────────────────
 GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
 ADZUNA_APP_ID: str  = os.getenv("ADZUNA_APP_ID", "")
 ADZUNA_API_KEY: str = os.getenv("ADZUNA_API_KEY", "")
 
-# ── Adzuna API ─────────────────────────────────────────────────────────────────
+# ── Adzuna ────────────────────────────────────────────────────────────────────
 ADZUNA_BASE_URL = "https://api.adzuna.com/v1/api/jobs"
 ADZUNA_COUNTRY_MAP = {
-    "Australia":        "au",
-    "United Kingdom":   "gb",
-    "United States":    "us",
-    "Canada":           "ca",
-    "Germany":          "de",
-    "France":           "fr",
-    "New Zealand":      "nz",
-    "Singapore":        "sg",
+    "Australia":      "au",
+    "United Kingdom": "gb",
+    "United States":  "us",
+    "Canada":         "ca",
+    "Germany":        "de",
+    "France":         "fr",
+    "New Zealand":    "nz",
+    "Singapore":      "sg",
 }
 
 # ── RSS Remote Job Feeds ──────────────────────────────────────────────────────
-# Keys are short + distinct so Streamlit multiselect doesn't truncate
 RSS_FEEDS = {
     "WeWorkRemotely – All":     "https://weworkremotely.com/remote-jobs.rss",
     "WeWorkRemotely – Dev":     "https://weworkremotely.com/categories/remote-programming-jobs.rss",
@@ -38,26 +37,48 @@ RSS_FEEDS = {
     "RemoteOK":                 "https://remoteok.com/remote-jobs.rss",
 }
 
-# ── Australian & Global Job Boards (Scraped) ──────────────────────────────────
-SEEK_BASE_URL    = "https://www.seek.com.au"
-JORA_BASE_URL    = "https://au.jora.com"
-INDEED_BASE_URL  = "https://au.indeed.com"
+# ── Job Board URLs ────────────────────────────────────────────────────────────
+SEEK_BASE_URL   = "https://www.seek.com.au"
+JORA_BASE_URL   = "https://au.jora.com"
+INDEED_BASE_URL = "https://au.indeed.com"
 
 SEEK_LOCATION_MAP = {
-    "Australia":    "All-Australia",
-    "Sydney":       "Sydney-NSW",
-    "Melbourne":    "Melbourne-VIC",
-    "Brisbane":     "Brisbane-QLD",
-    "Perth":        "Perth-WA",
-    "Adelaide":     "Adelaide-SA",
-    "Canberra":     "Canberra-ACT",
-    "Gold Coast":   "Gold-Coast-QLD",
-    "Newcastle":    "Newcastle-NSW",
-    "Ballarat":     "Ballarat-VIC",
-    "Geelong":      "Geelong-VIC",
+    "Australia":  "All-Australia",
+    "Sydney":     "Sydney-NSW",
+    "Melbourne":  "Melbourne-VIC",
+    "Brisbane":   "Brisbane-QLD",
+    "Perth":      "Perth-WA",
+    "Adelaide":   "Adelaide-SA",
+    "Canberra":   "Canberra-ACT",
+    "Gold Coast": "Gold-Coast-QLD",
+    "Newcastle":  "Newcastle-NSW",
+    "Ballarat":   "Ballarat-VIC",
+    "Geelong":    "Geelong-VIC",
+    "Wollongong": "Wollongong-NSW",
+    "Hobart":     "Hobart-TAS",
+    "Darwin":     "Darwin-NT",
+    "Cairns":     "Cairns-QLD",
+    "Townsville": "Townsville-QLD",
 }
 
-# Browser-like headers for scraping
+# ── Location signals for scoring ──────────────────────────────────────────────
+AU_SIGNALS = [
+    "australia", "sydney", "melbourne", "brisbane", "perth", "adelaide",
+    "canberra", "gold coast", "newcastle", "wollongong", "hobart", "darwin",
+    "ballarat", "geelong", "cairns", "townsville", "nsw", "vic", "qld",
+    "wa", "sa", "act", "tas", "nt", "au", "seek", "jora",
+]
+
+# Patterns that indicate a job is restricted to the USA/North America
+US_ONLY_PATTERNS = [
+    r"\bus only\b", r"\busa only\b", r"\bunited states only\b",
+    r"\bus-based\b", r"\bus residents\b", r"\bus citizens\b",
+    r"\bmust.*reside.*us\b", r"\bauthorized to work in the us\b",
+    r"\bwork authorization.*us\b", r"\bno.*international\b",
+    r"\bnorth america only\b", r"\bcanada.*us only\b",
+    r"\bhiring.*us.*canada\b",
+]
+
 SCRAPE_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -94,11 +115,13 @@ TECH_SKILLS = [
     "cybersecurity","penetration testing","soc","siem","firewalls","network security",
     "cisco","fortinet","palo alto","splunk","nessus","wireshark","vulnerability",
     "incident response","threat intelligence","iam","zero trust","endpoint",
+    # IT & Support
+    "active directory","microsoft 365","office 365","sharepoint","vmware",
+    "hyper-v","virtualization","windows server","itil","itsm","service desk",
+    "helpdesk","technical support","it support","networking","troubleshooting",
     # Other Tech
     "agile","scrum","jira","confluence","product management","ux","ui",
-    "figma","sketch","adobe xd","blockchain","solidity","web3","itil","itsm",
-    "service desk","helpdesk","active directory","microsoft 365","office 365",
-    "sharepoint","vmware","hyper-v","virtualization","windows server",
+    "figma","sketch","adobe xd","blockchain","solidity","web3",
 ]
 
 SOFT_SKILLS = [
@@ -111,7 +134,7 @@ SOFT_SKILLS = [
 
 ALL_SKILLS = TECH_SKILLS + SOFT_SKILLS
 
-# ── Job Title / Role Keywords ─────────────────────────────────────────────────
+# ── Job Titles ────────────────────────────────────────────────────────────────
 JOB_TITLE_KEYWORDS = [
     "software engineer","senior software engineer","staff engineer","principal engineer",
     "software developer","full stack","frontend","backend","data scientist",
@@ -128,11 +151,21 @@ JOB_TITLE_KEYWORDS = [
     "cloud architect","security analyst","penetration tester","soc analyst",
 ]
 
-# ── Experience Level Heuristics ────────────────────────────────────────────────
+# ── Experience Levels ─────────────────────────────────────────────────────────
 EXPERIENCE_YEARS_MAP = {
     "Junior / Entry-level":  (0, 2),
     "Mid-level":             (2, 5),
     "Senior":                (5, 10),
     "Lead / Principal":      (8, 15),
     "Director / Executive":  (12, 30),
+}
+
+# ── Application tracker statuses ──────────────────────────────────────────────
+JOB_STATUSES = {
+    "none":      ("➖", "Not saved",  "#475569"),
+    "saved":     ("⭐", "Saved",      "#6366f1"),
+    "applied":   ("📤", "Applied",    "#06b6d4"),
+    "interview": ("📞", "Interview",  "#f59e0b"),
+    "offer":     ("✅", "Offer!",     "#22c55e"),
+    "rejected":  ("❌", "Rejected",   "#ef4444"),
 }

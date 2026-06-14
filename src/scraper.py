@@ -1,7 +1,7 @@
 """
 scraper.py - Job listing fetcher
-Sources: Seek (AU), Jora (AU), Indeed AU RSS, Adzuna API, Remote RSS feeds.
-Returns a unified list of Job dicts.
+Sources: Seek (AU), Jora (AU), GradConnection (AU), EthicalJobs (AU),
+         Indeed AU RSS, Adzuna API, Remote RSS feeds.
 """
 
 from __future__ import annotations
@@ -13,53 +13,33 @@ import time
 import hashlib
 import requests
 import feedparser
-from datetime import datetime
 from typing import Any
 from bs4 import BeautifulSoup
 
 from src.config import (
-    ADZUNA_BASE_URL, ADZUNA_COUNTRY_MAP,
-    ADZUNA_APP_ID, ADZUNA_API_KEY,
-    RSS_FEEDS,
-    SEEK_BASE_URL, JORA_BASE_URL, INDEED_BASE_URL,
-    SEEK_LOCATION_MAP, SCRAPE_HEADERS,
+    ADZUNA_BASE_URL, ADZUNA_COUNTRY_MAP, ADZUNA_APP_ID, ADZUNA_API_KEY,
+    RSS_FEEDS, SEEK_BASE_URL, JORA_BASE_URL, INDEED_BASE_URL,
+    SEEK_LOCATION_MAP, SCRAPE_HEADERS, US_ONLY_PATTERNS,
 )
 
 
 # ── Job schema ────────────────────────────────────────────────────────────────
 
 def _make_job(
-    title: str,
-    company: str,
-    location: str,
-    description: str,
-    url: str,
-    salary_min: float | None = None,
-    salary_max: float | None = None,
-    salary_currency: str = "AUD",
-    posted_date: str = "",
-    source: str = "",
-    job_type: str = "Full-time",
-    is_remote: bool = False,
+    title: str, company: str, location: str, description: str, url: str,
+    salary_min: float | None = None, salary_max: float | None = None,
+    salary_currency: str = "AUD", posted_date: str = "",
+    source: str = "", job_type: str = "Full-time", is_remote: bool = False,
 ) -> dict[str, Any]:
     job_id = hashlib.md5(f"{title}{company}{url}".encode()).hexdigest()[:12]
     return {
-        "id":              job_id,
-        "title":           _clean(title),
-        "company":         _clean(company),
-        "location":        _clean(location),
-        "description":     _clean(description),
-        "url":             url,
-        "salary_min":      salary_min,
-        "salary_max":      salary_max,
-        "salary_currency": salary_currency,
-        "posted_date":     posted_date,
-        "source":          source,
-        "job_type":        job_type,
-        "is_remote":       is_remote,
-        "match_score":     0.0,
-        "matched_skills":  [],
-        "skill_gaps":      [],
+        "id": job_id, "title": _clean(title), "company": _clean(company),
+        "location": _clean(location), "description": _clean(description),
+        "url": url, "salary_min": salary_min, "salary_max": salary_max,
+        "salary_currency": salary_currency, "posted_date": posted_date,
+        "source": source, "job_type": job_type, "is_remote": is_remote,
+        "match_score": 0.0, "matched_skills": [], "skill_gaps": [],
+        "status": "none", "notes": "",
     }
 
 
@@ -72,15 +52,12 @@ def _clean(text: str) -> str:
     return text
 
 
-def _parse_salary_text(salary_str: str) -> tuple[float | None, float | None]:
-    """Parse salary text like 'AUD 140000 - 160000 per annum' or '$100k - $120k'."""
+def _parse_salary(salary_str: str) -> tuple[float | None, float | None]:
     if not salary_str:
         return None, None
     text = salary_str.replace(",", "").replace("$", "").replace("AUD", "")
-    # Convert k notation
     text = re.sub(r'(\d+\.?\d*)k', lambda m: str(float(m.group(1)) * 1000), text, flags=re.I)
-    nums = re.findall(r'\d+(?:\.\d+)?', text)
-    nums = [float(n) for n in nums if float(n) >= 1000]  # ignore small numbers
+    nums = [float(n) for n in re.findall(r'\d+(?:\.\d+)?', text) if float(n) >= 1000]
     if len(nums) >= 2:
         return min(nums[:2]), max(nums[:2])
     elif len(nums) == 1:
@@ -93,305 +70,280 @@ def _is_remote(title: str, desc: str, location: str) -> bool:
     return any(w in combined for w in ["remote", "work from home", "wfh", "distributed", "anywhere"])
 
 
-# ── Seek Scraper ──────────────────────────────────────────────────────────────
+def _is_us_only(title: str, desc: str) -> bool:
+    """Return True if the job is explicitly US-only."""
+    combined = (title + " " + desc).lower()
+    return any(re.search(p, combined) for p in US_ONLY_PATTERNS)
+
+
+# ── Seek ──────────────────────────────────────────────────────────────────────
 
 def fetch_seek_jobs(
-    keywords: list[str],
-    location: str = "Australia",
-    max_pages: int = 3,
+    keywords: list[str], location: str = "Australia", max_pages: int = 3,
 ) -> list[dict[str, Any]]:
-    """
-    Scrape Seek.com.au job listings using their data-automation HTML attributes.
-    Seek renders content server-side so requests + BeautifulSoup works.
-    """
+    """Scrape Seek.com.au using data-automation HTML attributes."""
     jobs: list[dict[str, Any]] = []
-
-    # Build slug for location
     seek_location = SEEK_LOCATION_MAP.get(location, "All-Australia")
-    # Build keyword slug: replace spaces with hyphens
-    keyword_parts = "-".join(keywords[:4]).replace(" ", "-").lower()
-    keyword_parts = re.sub(r'[^a-z0-9\-]', '', keyword_parts)
+
+    # Build keyword slug
+    kw_slug = "-".join(keywords[:4]).replace(" ", "-").lower()
+    kw_slug = re.sub(r'[^a-z0-9\-]', '', kw_slug).strip("-")
+    if not kw_slug:
+        kw_slug = "it-jobs"
 
     session = requests.Session()
     session.headers.update(SCRAPE_HEADERS)
 
     for page in range(1, max_pages + 1):
-        url = f"{SEEK_BASE_URL}/{keyword_parts}-jobs/in-{seek_location}"
+        url    = f"{SEEK_BASE_URL}/{kw_slug}-jobs/in-{seek_location}"
         params = {"page": page} if page > 1 else {}
-
         try:
             resp = session.get(url, params=params, timeout=20)
             if resp.status_code != 200:
-                print(f"[Seek] HTTP {resp.status_code} on page {page}")
                 break
-
-            soup = BeautifulSoup(resp.text, "lxml")
-
-            # Seek uses data-automation="normalJob" for standard listings
-            cards = soup.find_all(attrs={"data-automation": "normalJob"})
-            # Also grab featured jobs
-            cards += soup.find_all(attrs={"data-automation": "featuredJob"})
-
+            soup  = BeautifulSoup(resp.text, "lxml")
+            cards = (soup.find_all(attrs={"data-automation": "normalJob"})
+                     + soup.find_all(attrs={"data-automation": "featuredJob"}))
             if not cards:
-                print(f"[Seek] No cards found on page {page}, stopping.")
                 break
 
             for card in cards:
                 try:
-                    title_el    = card.find(attrs={"data-automation": "jobTitle"})
-                    company_el  = card.find(attrs={"data-automation": "jobCompany"})
-                    loc_el      = card.find(attrs={"data-automation": "jobCardLocation"})
-                    salary_el   = card.find(attrs={"data-automation": "jobSalary"})
-                    desc_el     = card.find(attrs={"data-automation": "jobShortDescription"})
-                    date_el     = card.find(attrs={"data-automation": "jobListingDate"})
-                    link_el     = card.find("a", attrs={"data-automation": "jobTitle"})
+                    def _da(key):
+                        el = card.find(attrs={"data-automation": key})
+                        return el.get_text(strip=True) if el else ""
 
-                    title    = title_el.get_text(strip=True)    if title_el    else ""
-                    company  = company_el.get_text(strip=True)  if company_el  else ""
-                    loc      = loc_el.get_text(strip=True)      if loc_el      else location
-                    sal_text = salary_el.get_text(strip=True)   if salary_el   else ""
-                    desc     = desc_el.get_text(strip=True)     if desc_el     else ""
-                    date_str = date_el.get_text(strip=True)     if date_el     else ""
-                    href     = link_el.get("href", "")          if link_el     else ""
-
+                    title   = _da("jobTitle")
+                    company = _da("jobCompany")
+                    loc     = _da("jobCardLocation") or location
+                    sal_txt = _da("jobSalary")
+                    desc    = _da("jobShortDescription")
+                    date    = _da("jobListingDate")
+                    link_el = card.find("a", attrs={"data-automation": "jobTitle"})
+                    href    = link_el.get("href", "") if link_el else ""
                     job_url = f"{SEEK_BASE_URL}{href.split('?')[0]}" if href else ""
-                    sal_min, sal_max = _parse_salary_text(sal_text)
+                    sal_min, sal_max = _parse_salary(sal_txt)
 
                     if not title:
                         continue
-
                     jobs.append(_make_job(
-                        title=title,
-                        company=company,
-                        location=loc,
-                        description=desc,
-                        url=job_url,
-                        salary_min=sal_min,
-                        salary_max=sal_max,
-                        salary_currency="AUD",
-                        posted_date=date_str,
-                        source="Seek",
-                        is_remote=_is_remote(title, desc, loc),
+                        title=title, company=company, location=loc,
+                        description=desc, url=job_url,
+                        salary_min=sal_min, salary_max=sal_max,
+                        salary_currency="AUD", posted_date=date,
+                        source="Seek", is_remote=_is_remote(title, desc, loc),
                     ))
-                except Exception as e:
+                except Exception:
                     continue
 
-            print(f"[Seek] Page {page}: {len(cards)} cards found, total so far: {len(jobs)}")
-            time.sleep(1.5)  # be polite
+            print(f"[Seek] Page {page}: {len(cards)} cards — total {len(jobs)}")
+            time.sleep(1.5)
 
         except Exception as e:
-            print(f"[Seek] Error on page {page}: {e}")
+            print(f"[Seek] Error p{page}: {e}")
             break
 
     return jobs
 
 
-# ── Jora Scraper ──────────────────────────────────────────────────────────────
+# ── Jora ──────────────────────────────────────────────────────────────────────
 
 def fetch_jora_jobs(
-    keywords: list[str],
-    location: str = "Australia",
-    max_pages: int = 3,
+    keywords: list[str], location: str = "Australia", max_pages: int = 3,
 ) -> list[dict[str, Any]]:
-    """
-    Scrape Jora AU job listings. Jora stores job data in data-braze-job-panel-view JSON
-    attributes on each job card div.
-    """
+    """Scrape Jora AU via data-braze-job-panel-view JSON metadata."""
     jobs: list[dict[str, Any]] = []
-    query = " ".join(keywords[:5])
+    query   = " ".join(keywords[:5])
     session = requests.Session()
     session.headers.update(SCRAPE_HEADERS)
 
     for page in range(1, max_pages + 1):
         params = {
             "q": query,
-            "l": location if location != "Australia" else "",
+            "l": "" if location == "Australia" else location,
             "p": page,
         }
-
         try:
             resp = session.get(f"{JORA_BASE_URL}/j", params=params, timeout=20)
             if resp.status_code != 200:
-                print(f"[Jora] HTTP {resp.status_code} on page {page}")
                 break
-
-            soup = BeautifulSoup(resp.text, "lxml")
-
-            # Jora job cards have data-braze-job-panel-view with JSON metadata
+            soup  = BeautifulSoup(resp.text, "lxml")
             cards = soup.find_all("div", class_=lambda c: c and "result" in c)
-
             if not cards:
-                print(f"[Jora] No cards on page {page}, stopping.")
                 break
 
             for card in cards:
                 try:
-                    # Extract JSON metadata from data attribute
-                    braze_data = card.get("data-braze-job-panel-view", "")
                     meta: dict = {}
-                    if braze_data:
+                    braze = card.get("data-braze-job-panel-view", "")
+                    if braze:
                         try:
-                            meta = json.loads(braze_data)
+                            meta = json.loads(braze)
                         except Exception:
                             pass
 
                     title   = meta.get("job_title", "")
                     company = meta.get("company_name", "")
-                    loc     = meta.get("location", "")
-                    job_id  = meta.get("job_id", "")
+                    loc     = meta.get("location", location)
 
-                    # Fallback: extract from HTML
                     if not title:
                         link_el = card.find("a", href=lambda h: h and "/job/" in h)
                         title   = link_el.get_text(strip=True) if link_el else ""
 
-                    # Get short description from the card HTML
-                    desc_el = card.find("p", class_=lambda c: c and "description" in (c or ""))
-                    if not desc_el:
-                        desc_el = card.find("p")
-                    desc = desc_el.get_text(strip=True) if desc_el else ""
-
-                    # Get salary
-                    sal_el = card.find(class_=lambda c: c and "salary" in (c or "").lower())
-                    sal_text = sal_el.get_text(strip=True) if sal_el else ""
-                    sal_min, sal_max = _parse_salary_text(sal_text)
-
-                    # Get posted date
-                    date_el = card.find(class_=lambda c: c and "date" in (c or "").lower())
+                    desc_el  = card.find("p") or card.find(class_=lambda c: c and "desc" in (c or ""))
+                    desc     = desc_el.get_text(strip=True) if desc_el else ""
+                    sal_el   = card.find(class_=lambda c: c and "salary" in (c or "").lower())
+                    sal_txt  = sal_el.get_text(strip=True) if sal_el else ""
+                    date_el  = card.find(class_=lambda c: c and "date" in (c or "").lower())
                     date_str = date_el.get_text(strip=True) if date_el else ""
-
-                    # Build URL
-                    link_el = card.find("a", href=lambda h: h and "/job/" in h)
-                    href = link_el.get("href", "") if link_el else ""
-                    job_url = f"{JORA_BASE_URL}{href}" if href.startswith("/") else href
+                    link_el  = card.find("a", href=lambda h: h and "/job/" in h)
+                    href     = link_el.get("href", "") if link_el else ""
+                    job_url  = f"{JORA_BASE_URL}{href}" if href.startswith("/") else href
+                    sal_min, sal_max = _parse_salary(sal_txt)
 
                     if not title:
                         continue
-
                     jobs.append(_make_job(
-                        title=title,
-                        company=company,
-                        location=loc or location,
-                        description=desc,
-                        url=job_url,
-                        salary_min=sal_min,
-                        salary_max=sal_max,
-                        salary_currency="AUD",
-                        posted_date=date_str,
-                        source="Jora",
-                        is_remote=_is_remote(title, desc, loc),
+                        title=title, company=company, location=loc,
+                        description=desc, url=job_url,
+                        salary_min=sal_min, salary_max=sal_max,
+                        salary_currency="AUD", posted_date=date_str,
+                        source="Jora", is_remote=_is_remote(title, desc, loc),
                     ))
-                except Exception as e:
+                except Exception:
                     continue
 
-            print(f"[Jora] Page {page}: {len(cards)} cards, total: {len(jobs)}")
+            print(f"[Jora] Page {page}: {len(cards)} cards — total {len(jobs)}")
             time.sleep(1.2)
 
         except Exception as e:
-            print(f"[Jora] Error on page {page}: {e}")
+            print(f"[Jora] Error p{page}: {e}")
             break
 
+    return jobs
+
+
+# ── GradConnection (AU graduate jobs) ─────────────────────────────────────────
+
+def fetch_gradconnection_jobs(
+    keywords: list[str], location: str = "australia",
+) -> list[dict[str, Any]]:
+    """Scrape GradConnection AU."""
+    jobs: list[dict[str, Any]] = []
+    query = "-".join(keywords[:3]).lower()
+    query = re.sub(r'[^a-z0-9\-]', '', query)
+    loc_slug = location.lower().replace(" ", "-")
+
+    urls = [
+        f"https://au.gradconnection.com/jobs/search/?search={'+'.join(keywords[:4])}",
+        f"https://au.gradconnection.com/graduate-jobs/information-technology/",
+        f"https://au.gradconnection.com/graduate-jobs/technology/",
+    ]
+
+    session = requests.Session()
+    session.headers.update(SCRAPE_HEADERS)
+
+    for url in urls[:1]:  # just the search URL
+        try:
+            resp = session.get(url, timeout=15)
+            if resp.status_code != 200:
+                continue
+            soup  = BeautifulSoup(resp.text, "lxml")
+            cards = soup.find_all("div", class_=lambda c: c and "job" in (c or "").lower())
+
+            for card in cards[:20]:
+                try:
+                    link_el = card.find("a", href=lambda h: h and "/jobs/" in (h or ""))
+                    if not link_el:
+                        continue
+                    title   = link_el.get_text(strip=True)
+                    href    = link_el.get("href", "")
+                    job_url = f"https://au.gradconnection.com{href}" if href.startswith("/") else href
+                    company_el = card.find(class_=lambda c: c and "company" in (c or "").lower())
+                    company    = company_el.get_text(strip=True) if company_el else ""
+                    loc_el     = card.find(class_=lambda c: c and "location" in (c or "").lower())
+                    loc        = loc_el.get_text(strip=True) if loc_el else location
+
+                    if not title or len(title) < 3:
+                        continue
+                    jobs.append(_make_job(
+                        title=title, company=company, location=loc,
+                        description="", url=job_url,
+                        salary_currency="AUD", source="GradConnection",
+                        is_remote=_is_remote(title, "", loc),
+                    ))
+                except Exception:
+                    continue
+        except Exception as e:
+            print(f"[GradConnection] Error: {e}")
+
+    print(f"[GradConnection] {len(jobs)} jobs")
     return jobs
 
 
 # ── Indeed AU RSS ─────────────────────────────────────────────────────────────
 
 def fetch_indeed_jobs(
-    keywords: list[str],
-    location: str = "Australia",
-    radius_km: int = 50,
-    max_entries: int = 50,
+    keywords: list[str], location: str = "Australia", radius_km: int = 50,
 ) -> list[dict[str, Any]]:
-    """
-    Fetch jobs from Indeed AU via their public RSS feed.
-    """
-    query = " ".join(keywords[:5])
-    params = {
-        "q":      query,
-        "l":      location if location != "Australia" else "",
-        "radius": radius_km,
-        "limit":  max_entries,
-        "fromage": 30,  # posted in last 30 days
-    }
+    query     = " ".join(keywords[:5])
+    loc_param = "" if location == "Australia" else location
+    params    = {"q": query, "l": loc_param, "radius": radius_km, "fromage": 30}
     param_str = "&".join(f"{k}={requests.utils.quote(str(v))}" for k, v in params.items() if v)
-    url = f"{INDEED_BASE_URL}/rss?{param_str}"
-
+    url       = f"{INDEED_BASE_URL}/rss?{param_str}"
     jobs: list[dict[str, Any]] = []
     try:
-        headers = {**SCRAPE_HEADERS, "Accept": "application/rss+xml, application/xml, text/xml, */*"}
+        headers = {**SCRAPE_HEADERS, "Accept": "application/rss+xml, text/xml, */*"}
         resp = requests.get(url, headers=headers, timeout=15)
         feed = feedparser.parse(resp.text)
-
-        for entry in feed.entries[:max_entries]:
+        for entry in feed.entries[:50]:
             title   = entry.get("title", "")
             summary = _clean(entry.get("summary", ""))
             link    = entry.get("link", "")
             date    = entry.get("published", "")[:10] if entry.get("published") else ""
-
-            # Indeed title format: "Job Title - Company Name - Location"
-            company = ""
-            loc     = location
+            company, loc = "", location
             if " - " in title:
                 parts = title.split(" - ")
                 if len(parts) >= 3:
-                    title   = parts[0].strip()
-                    company = parts[1].strip()
-                    loc     = parts[2].strip()
+                    title, company, loc = parts[0].strip(), parts[1].strip(), parts[2].strip()
                 elif len(parts) == 2:
-                    title   = parts[0].strip()
-                    company = parts[1].strip()
-
+                    title, company = parts[0].strip(), parts[1].strip()
             jobs.append(_make_job(
-                title=title,
-                company=company,
-                location=loc,
-                description=summary,
-                url=link,
-                posted_date=date,
-                source="Indeed",
-                salary_currency="AUD",
+                title=title, company=company, location=loc,
+                description=summary, url=link, posted_date=date,
+                source="Indeed", salary_currency="AUD",
                 is_remote=_is_remote(title, summary, loc),
             ))
     except Exception as e:
         print(f"[Indeed] Error: {e}")
-
     return jobs
 
 
-# ── Adzuna API ────────────────────────────────────────────────────────────────
+# ── Adzuna ────────────────────────────────────────────────────────────────────
 
 def fetch_adzuna_jobs(
-    keywords: list[str],
-    country: str = "Australia",
-    location: str = "",
-    results_per_page: int = 50,
-    max_pages: int = 2,
-    app_id: str = "",
-    api_key: str = "",
+    keywords: list[str], country: str = "Australia", location: str = "",
+    results_per_page: int = 50, max_pages: int = 2,
+    app_id: str = "", api_key: str = "",
 ) -> list[dict[str, Any]]:
-    """Fetch jobs from Adzuna API."""
     _app_id  = app_id  or ADZUNA_APP_ID
     _api_key = api_key or ADZUNA_API_KEY
-
     if not _app_id or not _api_key:
         return []
 
     country_code = ADZUNA_COUNTRY_MAP.get(country, "au")
-    base = f"{ADZUNA_BASE_URL}/{country_code}/search"
-    query = " ".join(keywords[:5]) if keywords else "software engineer"
+    base  = f"{ADZUNA_BASE_URL}/{country_code}/search"
+    query = " ".join(keywords[:5]) if keywords else "it jobs"
     jobs: list[dict[str, Any]] = []
 
     for page in range(1, max_pages + 1):
         params: dict[str, Any] = {
-            "app_id":           _app_id,
-            "app_key":          _api_key,
-            "results_per_page": results_per_page,
-            "what":             query,
-            "content-type":     "application/json",
+            "app_id": _app_id, "app_key": _api_key,
+            "results_per_page": results_per_page, "what": query,
+            "content-type": "application/json",
         }
         if location:
             params["where"] = location
-
         try:
             resp = requests.get(f"{base}/{page}", params=params, timeout=15)
             if resp.status_code != 200:
@@ -400,28 +352,23 @@ def fetch_adzuna_jobs(
             for item in data.get("results", []):
                 sal_min = item.get("salary_min")
                 sal_max = item.get("salary_max")
+                title   = item.get("title", "")
+                desc    = item.get("description", "")
+                loc     = item.get("location", {}).get("display_name", "")
                 jobs.append(_make_job(
-                    title=item.get("title", ""),
-                    company=item.get("company", {}).get("display_name", ""),
-                    location=item.get("location", {}).get("display_name", ""),
-                    description=item.get("description", ""),
+                    title=title, company=item.get("company", {}).get("display_name", ""),
+                    location=loc, description=desc,
                     url=item.get("redirect_url", ""),
                     salary_min=float(sal_min) if sal_min else None,
                     salary_max=float(sal_max) if sal_max else None,
                     salary_currency="AUD" if country_code == "au" else "USD",
                     posted_date=item.get("created", "")[:10],
-                    source="Adzuna",
-                    is_remote=_is_remote(
-                        item.get("title",""),
-                        item.get("description",""),
-                        item.get("location",{}).get("display_name",""),
-                    ),
+                    source="Adzuna", is_remote=_is_remote(title, desc, loc),
                 ))
         except Exception as e:
-            print(f"[Adzuna] Error on page {page}: {e}")
+            print(f"[Adzuna] p{page}: {e}")
             break
         time.sleep(0.5)
-
     return jobs
 
 
@@ -430,15 +377,12 @@ def fetch_adzuna_jobs(
 def fetch_rss_jobs(
     selected_feeds: list[str] | None = None,
     keywords: list[str] | None = None,
+    filter_us_only: bool = True,
 ) -> list[dict[str, Any]]:
-    """
-    Fetch jobs from selected RSS feeds with optional keyword filter.
-    """
     feeds_to_use = {
         k: v for k, v in RSS_FEEDS.items()
         if selected_feeds is None or k in selected_feeds
     }
-
     jobs: list[dict[str, Any]] = []
     kw_lower = [k.lower() for k in (keywords or [])]
 
@@ -447,9 +391,13 @@ def fetch_rss_jobs(
             feed = feedparser.parse(url)
             for entry in feed.entries:
                 title       = entry.get("title", "")
-                description = entry.get("summary", entry.get("description", ""))
+                description = _clean(entry.get("summary", entry.get("description", "")))
                 link        = entry.get("link", "")
                 published   = entry.get("published", "")[:10] if entry.get("published") else ""
+
+                # Skip US-only jobs
+                if filter_us_only and _is_us_only(title, description):
+                    continue
 
                 # Keyword filter
                 if kw_lower:
@@ -457,7 +405,6 @@ def fetch_rss_jobs(
                     if not any(kw in combined for kw in kw_lower):
                         continue
 
-                # Parse "Title at Company" / "Title @ Company"
                 company = ""
                 if " at " in title:
                     parts = title.rsplit(" at ", 1)
@@ -467,19 +414,13 @@ def fetch_rss_jobs(
                     title, company = parts[0].strip(), parts[1].strip()
 
                 jobs.append(_make_job(
-                    title=title,
-                    company=company,
-                    location="Remote",
-                    description=_clean(description),
-                    url=link,
-                    posted_date=published,
-                    source=feed_name,
-                    is_remote=True,
+                    title=title, company=company, location="Remote (Global)",
+                    description=description, url=link,
+                    posted_date=published, source=feed_name, is_remote=True,
                 ))
         except Exception as e:
             print(f"[RSS:{feed_name}] Error: {e}")
         time.sleep(0.3)
-
     return jobs
 
 
@@ -494,54 +435,47 @@ def fetch_all_jobs(
     include_jora: bool = True,
     include_indeed: bool = True,
     include_adzuna: bool = True,
+    include_gradconnection: bool = False,
     selected_rss_feeds: list[str] | None = None,
     adzuna_app_id: str = "",
     adzuna_api_key: str = "",
     seek_pages: int = 2,
     jora_pages: int = 2,
+    filter_us_only: bool = True,
 ) -> list[dict[str, Any]]:
-    """Fetch jobs from all configured sources and deduplicate."""
     all_jobs: list[dict[str, Any]] = []
     loc = location or country
 
-    # ── Australian/Global scraped boards ──
     if include_seek and country == "Australia":
-        seek_loc = location if location else "Australia"
-        seek_jobs = fetch_seek_jobs(keywords=keywords, location=seek_loc, max_pages=seek_pages)
-        all_jobs.extend(seek_jobs)
+        all_jobs.extend(fetch_seek_jobs(keywords=keywords, location=location or "Australia", max_pages=seek_pages))
 
     if include_jora:
-        jora_jobs = fetch_jora_jobs(keywords=keywords, location=loc, max_pages=jora_pages)
-        all_jobs.extend(jora_jobs)
+        all_jobs.extend(fetch_jora_jobs(keywords=keywords, location=loc, max_pages=jora_pages))
 
     if include_indeed:
-        indeed_jobs = fetch_indeed_jobs(keywords=keywords, location=loc)
-        all_jobs.extend(indeed_jobs)
+        all_jobs.extend(fetch_indeed_jobs(keywords=keywords, location=loc))
+
+    if include_gradconnection and country == "Australia":
+        all_jobs.extend(fetch_gradconnection_jobs(keywords=keywords, location=loc))
 
     if include_adzuna and (adzuna_app_id or ADZUNA_APP_ID):
-        adzuna = fetch_adzuna_jobs(
-            keywords=keywords,
-            country=country,
-            location=location,
-            app_id=adzuna_app_id,
-            api_key=adzuna_api_key,
-        )
-        all_jobs.extend(adzuna)
+        all_jobs.extend(fetch_adzuna_jobs(
+            keywords=keywords, country=country, location=location,
+            app_id=adzuna_app_id, api_key=adzuna_api_key,
+        ))
 
-    # ── Remote RSS feeds ──
     if include_remote:
-        rss = fetch_rss_jobs(
+        all_jobs.extend(fetch_rss_jobs(
             selected_feeds=selected_rss_feeds,
             keywords=keywords if keywords else None,
-        )
-        all_jobs.extend(rss)
+            filter_us_only=filter_us_only,
+        ))
 
-    # Deduplicate by id
+    # Deduplicate
     seen: set[str] = set()
     unique: list[dict[str, Any]] = []
     for job in all_jobs:
         if job["id"] not in seen:
             seen.add(job["id"])
             unique.append(job)
-
     return unique
