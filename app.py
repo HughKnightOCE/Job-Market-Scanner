@@ -19,6 +19,11 @@ from src.charts import (
     source_pie_chart, skill_gap_chart, matched_skills_chart, match_score_gauge,
 )
 from src.config import RSS_FEEDS, ADZUNA_COUNTRY_MAP, JOB_STATUSES
+from src.analyzer import (
+    analyze_gaps, estimate_market_salary, benchmark_from_listings, flag_new_jobs,
+)
+from src.pdf_export import generate_pdf
+import time
 
 
 # ── Page config ───────────────────────────────────────────────────────────────
@@ -122,6 +127,9 @@ def _init():
         "cover_letter_job_id": "",
         "last_location": "",
         "last_country": "Australia",
+        "gap_report": "",
+        "last_scan_time": 0.0,
+        "trigger_autoscan": False,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -181,6 +189,22 @@ with st.sidebar:
     st.markdown("#### 🎯 Filter")
     min_score = st.slider("Minimum Match Score (%)", 0, 100, 0, 5)
 
+    st.markdown("#### ⏰ Auto-Scan")
+    auto_scan_opt = st.selectbox(
+        "Auto-Scan Interval",
+        ["Disabled", "10 Minutes", "30 Minutes", "60 Minutes"],
+        index=0,
+        help="Runs job scan automatically in the background if the dashboard is kept open.",
+    )
+
+    interval_mins = 0
+    if auto_scan_opt == "10 Minutes":
+        interval_mins = 10
+    elif auto_scan_opt == "30 Minutes":
+        interval_mins = 30
+    elif auto_scan_opt == "60 Minutes":
+        interval_mins = 60
+
     with st.expander("🔑 API Keys (optional)"):
         st.caption("Stored in memory only.")
         gemini_key = st.text_input("Gemini API Key", type="password",
@@ -196,8 +220,16 @@ with st.sidebar:
 
     scan_clicked = st.button("🚀 Scan for Jobs", use_container_width=True)
 
-    if scan_clicked:
-        if not uploaded:
+    # Check if auto-scan is triggered
+    if st.session_state.scan_done and interval_mins > 0 and st.session_state.get("last_scan_time"):
+        elapsed = (time.time() - st.session_state.last_scan_time) / 60
+        if elapsed >= interval_mins:
+            st.session_state.trigger_autoscan = True
+
+    if scan_clicked or (st.session_state.get("trigger_autoscan") and st.session_state.resume_profile):
+        st.session_state.trigger_autoscan = False
+        
+        if scan_clicked and not uploaded and not st.session_state.resume_profile:
             st.error("Please upload your resume first!")
         elif not any([inc_seek, inc_jora, inc_indeed, inc_remote, inc_adzuna, inc_grad]):
             st.error("Select at least one job source!")
@@ -205,9 +237,10 @@ with st.sidebar:
             st.session_state.last_location = location
             st.session_state.last_country  = country
 
-            with st.spinner("Parsing your resume…"):
-                st.session_state.resume_profile = parse_resume(
-                    uploaded, gemini_api_key=st.session_state.gemini_key)
+            if scan_clicked or not st.session_state.resume_profile:
+                with st.spinner("Parsing your resume…"):
+                    st.session_state.resume_profile = parse_resume(
+                        uploaded, gemini_api_key=st.session_state.gemini_key)
 
             profile  = st.session_state.resume_profile
             keywords = profile.get("skills", [])[:10] + profile.get("job_titles", [])[:3]
@@ -239,14 +272,42 @@ with st.sidebar:
                 job["status"] = st.session_state.job_statuses.get(jid, "none")
                 job["notes"]  = st.session_state.job_notes.get(jid, "")
 
+            # If we had a previous list, we can flag new jobs
+            prev_ids = {j["id"] for j in st.session_state.jobs} if st.session_state.jobs else set()
+            if prev_ids:
+                scored, new_cnt = flag_new_jobs(scored, prev_ids)
+                if new_cnt > 0:
+                    st.toast(f"🔔 Found {new_cnt} new jobs!", icon="🎉")
+
             st.session_state.jobs      = scored
             st.session_state.scan_done = True
+            st.session_state.gap_report = ""  # reset gap report on new scan
+            st.session_state.last_scan_time = time.time()
             st.rerun()
 
     if st.session_state.scan_done:
         n = len(st.session_state.jobs)
         f = len([j for j in st.session_state.jobs if j["match_score"] >= min_score])
         st.success(f"{n} jobs found  •  {f} above {min_score}%")
+        
+        # Countdown reload handler
+        if interval_mins > 0 and st.session_state.last_scan_time:
+            elapsed = (time.time() - st.session_state.last_scan_time) / 60
+            if elapsed < interval_mins:
+                remaining_sec = int((interval_mins - elapsed) * 60)
+                st.sidebar.info(f"⏰ Next auto-scan in {remaining_sec // 60}m {remaining_sec % 60}s")
+                
+                import streamlit.components.v1 as components
+                js_code = f"""
+                <a id="refresh-link" href="/" target="_parent" style="display:none;">Refresh</a>
+                <script>
+                  setTimeout(function() {{
+                    var link = document.getElementById("refresh-link");
+                    link.click();
+                  }}, {remaining_sec * 1000});
+                </script>
+                """
+                components.html(js_code, height=0, width=0)
 
     if st.session_state.scan_done:
         if st.button("🗑️ Clear Results", use_container_width=True):
@@ -316,10 +377,11 @@ render_metrics_row([
 
 st.markdown("<br>", unsafe_allow_html=True)
 
-tab_jobs, tab_tracker, tab_cover, tab_profile, tab_analytics, tab_export = st.tabs([
+tab_jobs, tab_tracker, tab_cover, tab_gaps, tab_profile, tab_analytics, tab_export = st.tabs([
     "🎯  Job Listings",
     "📋  Application Tracker",
     "💌  Cover Letter",
+    "🔍  Gap Analysis",
     "👤  My Profile",
     "📊  Analytics",
     "📥  Export",
@@ -510,6 +572,97 @@ with tab_cover:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# TAB 3.5 – RESUME GAP ANALYSIS
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_gaps:
+    section_header("🔍", "Resume Gap Analysis", "Compare your resume skills with market demands")
+    
+    if not profile:
+        st.info("Upload your resume and scan to see your gap analysis.")
+    elif not jobs_all:
+        st.info("Scan for jobs first.")
+    else:
+        # Run gap analysis (no Gemini call if api_key not provided)
+        with st.spinner("Analyzing skill gaps…"):
+            gaps = analyze_gaps(profile, jobs_all, gemini_api_key="")
+        
+        col_missing, col_matched = st.columns(2)
+        
+        with col_missing:
+            st.markdown("### ⚠️ Top Missing Skills")
+            st.markdown("These skills are highly requested in top matches but missing from your resume:")
+            missing_skills = gaps.get("top_missing", [])
+            if not missing_skills:
+                st.success("Great job! No major skill gaps identified in the top matches.")
+            else:
+                for skill, count in missing_skills[:10]:
+                    st.markdown(
+                        f'<div style="background:#ef444411;border:1px solid #ef444433;border-radius:8px;'
+                        f'padding:8px 12px;margin-bottom:6px;display:flex;justify-content:space-between;align-items:center;">'
+                        f'<span style="color:#fca5a5;font-weight:600;">{skill}</span>'
+                        f'<span style="background:#ef444433;color:#fca5a5;padding:2px 8px;border-radius:99px;font-size:0.75rem;">'
+                        f'Requested in {count} job(s)</span>'
+                        f'</div>',
+                        unsafe_allow_html=True
+                    )
+        
+        with col_matched:
+            st.markdown("### ✅ Top Matched Skills")
+            st.markdown("These in-demand skills from your resume match the job requirements:")
+            matched_skills = gaps.get("top_matched", [])
+            if not matched_skills:
+                st.info("No matching skills found in the top listings yet.")
+            else:
+                for skill, count in matched_skills[:10]:
+                    st.markdown(
+                        f'<div style="background:#22c55e11;border:1px solid #22c55e33;border-radius:8px;'
+                        f'padding:8px 12px;margin-bottom:6px;display:flex;justify-content:space-between;align-items:center;">'
+                        f'<span style="color:#86efac;font-weight:600;">{skill}</span>'
+                        f'<span style="background:#22c55e33;color:#86efac;padding:2px 8px;border-radius:99px;font-size:0.75rem;">'
+                        f'Requested in {count} job(s)</span>'
+                        f'</div>',
+                        unsafe_allow_html=True
+                    )
+        
+        # Display Plotly Skill Gap charts
+        st.markdown("<br>", unsafe_allow_html=True)
+        col_c1, col_c2 = st.columns(2)
+        with col_c1:
+            st.plotly_chart(matched_skills_chart(jobs_all), use_container_width=True)
+        with col_c2:
+            st.plotly_chart(skill_gap_chart(jobs_all), use_container_width=True)
+            
+        # Career Coach Report Section
+        st.divider()
+        st.markdown("### 🎓 AI Career Coach Report")
+        
+        if not st.session_state.gemini_key:
+            st.warning("Please configure your Gemini API Key in the sidebar to generate the AI Career Coach report.")
+        else:
+            if not st.session_state.gap_report:
+                if st.button("✨ Generate AI Career Coach Report", use_container_width=True):
+                    with st.spinner("Gemini is analyzing your profile and the job market…"):
+                        gaps_full = analyze_gaps(profile, jobs_all, gemini_api_key=st.session_state.gemini_key)
+                        st.session_state.gap_report = gaps_full.get("gemini_report", "")
+                    st.rerun()
+            else:
+                st.markdown(f'<div class="cover-letter-box">{st.session_state.gap_report}</div>',
+                            unsafe_allow_html=True)
+                
+                # Download button for report
+                st.download_button(
+                    "⬇️ Download AI Career Report (.md)",
+                    st.session_state.gap_report,
+                    file_name="career_coach_report.md",
+                    mime="text/markdown",
+                    use_container_width=True
+                )
+                if st.button("🔄 Regenerate Report", use_container_width=True):
+                    st.session_state.gap_report = ""
+                    st.rerun()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # TAB 4 – MY PROFILE
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_profile:
@@ -594,24 +747,68 @@ with tab_analytics:
         with cc:
             st.plotly_chart(top_companies_chart(jobs_all), use_container_width=True)
 
-        cm, cg2 = st.columns(2)
-        with cm:
-            st.plotly_chart(matched_skills_chart(jobs_all), use_container_width=True)
-        with cg2:
-            st.plotly_chart(skill_gap_chart(jobs_all), use_container_width=True)
-
+        st.divider()
+        st.markdown("### 💰 Salary Benchmarking & Market Intelligence")
+        
+        col_est, col_bench = st.columns(2)
+        
+        with col_est:
+            est = estimate_market_salary(profile)
+            if est:
+                st.markdown(f"""
+                <div style="background:linear-gradient(135deg, #1e1b4b, #12103a);border:1px solid #8b5cf655;
+                            border-top: 4px solid #8b5cf6;border-radius:12px;padding:20px;margin-bottom:15px;">
+                  <div style="font-size:0.85rem;color:#a78bfa;font-weight:700;text-transform:uppercase;">Estimated Market Value (AU)</div>
+                  <div style="font-size:1.8rem;font-weight:800;color:#e2e8f0;margin-top:4px;">
+                    {est['currency']} ${est['median']:,} <span style="font-size:0.95rem;font-weight:400;color:#94a3b8;">/ year</span>
+                  </div>
+                  <div style="font-size:0.82rem;color:#94a3b8;margin-top:6px;line-height:1.4;">
+                    Estimated benchmark for a <b>{est['role']}</b> role with <b>{est['years']} years</b> of experience in the AU market.
+                  </div>
+                  <div style="display:flex;justify-content:space-between;margin-top:12px;font-size:0.8rem;color:#c4c0e8;
+                              border-top:1px solid #2d2b55;padding-top:8px;">
+                    <span>📉 25th Pctl: <b>${est['low']:,}</b></span>
+                    <span>📈 75th Pctl: <b>${est['high']:,}</b></span>
+                  </div>
+                </div>
+                """, unsafe_allow_html=True)
+            else:
+                st.info("Could not determine AU market rate estimation from resume profile titles.")
+                
+        with col_bench:
+            bench = benchmark_from_listings(jobs_all)
+            if bench.get("has_data"):
+                overall = bench["overall"]
+                st.markdown(f"""
+                <div style="background:linear-gradient(135deg, #1e1b4b, #12103a);border:1px solid #06b6d455;
+                            border-top: 4px solid #06b6d4;border-radius:12px;padding:20px;margin-bottom:15px;">
+                  <div style="font-size:0.85rem;color:#67e8f9;font-weight:700;text-transform:uppercase;">Listing Salary Benchmarks</div>
+                  <div style="font-size:1.8rem;font-weight:800;color:#e2e8f0;margin-top:4px;">
+                    AUD ${int(overall['median']):,} <span style="font-size:0.95rem;font-weight:400;color:#94a3b8;">Median</span>
+                  </div>
+                  <div style="font-size:0.82rem;color:#94a3b8;margin-top:6px;line-height:1.4;">
+                    Aggregated across <b>{bench['count']}</b> scanned job listings that published salary details.
+                  </div>
+                  <div style="display:flex;justify-content:space-between;margin-top:12px;font-size:0.8rem;color:#c4c0e8;
+                              border-top:1px solid #2d2b55;padding-top:8px;">
+                    <span>📉 Min: <b>${int(overall['min']):,}</b></span>
+                    <span>📈 Max: <b>${int(overall['max']):,}</b></span>
+                  </div>
+                </div>
+                """, unsafe_allow_html=True)
+            else:
+                st.info("No listings with salary data found in this scan. Use Adzuna or other sources to see listing-based benchmarks.")
+        
         sal_fig = salary_range_chart(jobs_all)
         if sal_fig:
             st.plotly_chart(sal_fig, use_container_width=True)
-        else:
-            st.info("No salary data available. Add an Adzuna API key for salary benchmarking.")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 6 – EXPORT
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_export:
-    section_header("📥", "Export Results", "Download your matches as CSV or JSON")
+    section_header("📥", "Export Results", "Download your matches as PDF, CSV, or JSON")
 
     if not jobs_all:
         st.info("Run a scan first.")
@@ -642,7 +839,7 @@ with tab_export:
         st.markdown("**Preview (top 20)**")
         st.dataframe(df.head(20), use_container_width=True, hide_index=True)
 
-        ec, ej = st.columns(2)
+        ec, ej, ep = st.columns(3)
         with ec:
             st.download_button(
                 "⬇️  Download CSV", df.to_csv(index=False),
@@ -652,6 +849,13 @@ with tab_export:
             st.download_button(
                 "⬇️  Download JSON", _json.dumps(jobs_all, indent=2, default=str),
                 "job_market_scan.json", "application/json", use_container_width=True,
+            )
+        with ep:
+            with st.spinner("Generating PDF report…"):
+                pdf_data = generate_pdf(jobs_all, profile, top_n=30)
+            st.download_button(
+                "⬇️  Download PDF Report", pdf_data,
+                "job_market_scan.pdf", "application/pdf", use_container_width=True,
             )
         st.markdown(
             f'<div style="background:#1a1a2e;border:1px solid #2d2b55;border-radius:12px;'
