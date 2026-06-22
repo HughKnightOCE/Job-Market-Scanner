@@ -40,6 +40,7 @@ def _source_flag(source: str) -> str:
     flags = {
         "Seek": "🔵", "Jora": "🟣", "Indeed": "🔴",
         "GradConnection": "🎓", "Adzuna": "🟠",
+        "EthicalJobs": "🌱",
     }
     return flags.get(source, "🌐")
 

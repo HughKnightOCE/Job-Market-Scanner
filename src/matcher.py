@@ -210,3 +210,47 @@ def generate_cover_letter(
         return resp.text.strip()
     except Exception as e:
         return f"⚠️ Cover letter generation failed: {e}"
+
+
+def generate_interview_prep(
+    resume_profile: dict[str, Any],
+    job: dict[str, Any],
+    api_key: str,
+) -> str:
+    """Use Gemini to generate a tailored interview preparation guide for a specific job."""
+    if not api_key:
+        return "⚠️ A Gemini API key is required to generate interview preparation guides. Add it in the sidebar."
+    try:
+        import google.generativeai as genai
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel("gemini-1.5-flash")
+
+        profile_str = (
+            f"Name: {resume_profile.get('name', 'Candidate')}\n"
+            f"Skills: {', '.join(resume_profile.get('skills', [])[:25])}\n"
+            f"Experience: {resume_profile.get('experience_years', 0)} years\n"
+            f"Level: {resume_profile.get('experience_level', '')}\n"
+            f"Education: {', '.join(resume_profile.get('education', []))}\n"
+            f"Summary: {resume_profile.get('summary', '')[:400]}"
+        )
+        job_str = (
+            f"Role: {job.get('title', '')}\n"
+            f"Company: {job.get('company', '')}\n"
+            f"Location: {job.get('location', '')}\n"
+            f"Description: {job.get('description', '')[:800]}"
+        )
+        prompt = (
+            f"You are a mock interviewer and career coach. Generate a highly tailored interview preparation guide for this candidate applying to this job.\n\n"
+            f"CANDIDATE PROFILE:\n{profile_str}\n\n"
+            f"JOB:\n{job_str}\n\n"
+            "Create a detailed, structured guide containing:\n"
+            "1. **Company & Role Snapshot**: Quick insights on what the company does (inferred) and what this role focuses on.\n"
+            "2. **Top 3 Technical Questions**: Interview questions directly targetting key skills requested in the job description, with suggested answering points based on the candidate's resume.\n"
+            "3. **Top 3 Behavioral Questions**: Scenario-based questions matching the job's responsibilities, with STAR method guidelines tailored to the candidate's experience.\n"
+            "4. **Questions to Ask Them**: 3 smart questions the candidate can ask the interviewer at the end of the interview to show deep engagement.\n\n"
+            "Write the response in polished, readable Markdown with clear headings, bullet points, and clean formatting."
+        )
+        resp = model.generate_content(prompt)
+        return resp.text.strip()
+    except Exception as e:
+        return f"⚠️ Interview prep generation failed: {e}"

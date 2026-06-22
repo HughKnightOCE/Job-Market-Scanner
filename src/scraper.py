@@ -55,13 +55,21 @@ def _clean(text: str) -> str:
 def _parse_salary(salary_str: str) -> tuple[float | None, float | None]:
     if not salary_str:
         return None, None
-    text = salary_str.replace(",", "").replace("$", "").replace("AUD", "")
-    text = re.sub(r'(\d+\.?\d*)k', lambda m: str(float(m.group(1)) * 1000), text, flags=re.I)
-    nums = [float(n) for n in re.findall(r'\d+(?:\.\d+)?', text) if float(n) >= 1000]
-    if len(nums) >= 2:
-        return min(nums[:2]), max(nums[:2])
-    elif len(nums) == 1:
-        return nums[0], nums[0]
+    text = salary_str.replace(",", "").replace("$", "").replace("AUD", "").replace("USD", "")
+    text = re.sub(r'(\d+\.?\d*)\s*k', lambda m: str(float(m.group(1)) * 1000), text, flags=re.I)
+    nums = [float(n) for n in re.findall(r'\d+(?:\.\d+)?', text)]
+    if not nums:
+        return None, None
+    processed_nums = []
+    for n in nums:
+        if 30 <= n <= 350:
+            processed_nums.append(n * 1000)
+        elif n >= 1000:
+            processed_nums.append(n)
+    if len(processed_nums) >= 2:
+        return min(processed_nums[:2]), max(processed_nums[:2])
+    elif len(processed_nums) == 1:
+        return processed_nums[0], processed_nums[0]
     return None, None
 
 
@@ -220,6 +228,110 @@ def fetch_jora_jobs(
             print(f"[Jora] Error p{page}: {e}")
             break
 
+    return jobs
+
+
+# ── EthicalJobs (AU) ──────────────────────────────────────────────────────────
+
+def fetch_ethicaljobs_jobs(
+    keywords: list[str], location: str = "Australia", max_pages: int = 2,
+) -> list[dict[str, Any]]:
+    """Scrape EthicalJobs.com.au using BeautifulSoup."""
+    jobs: list[dict[str, Any]] = []
+    
+    query = " ".join(keywords[:4])
+    session = requests.Session()
+    session.headers.update(SCRAPE_HEADERS)
+    
+    loc_param = ""
+    loc_lower = location.lower()
+    if "melbourne" in loc_lower:
+        loc_param = "melbourne"
+    elif "sydney" in loc_lower:
+        loc_param = "sydney"
+    elif "brisbane" in loc_lower:
+        loc_param = "brisbane"
+    elif "perth" in loc_lower:
+        loc_param = "perth"
+    elif "adelaide" in loc_lower:
+        loc_param = "adelaide"
+    elif "canberra" in loc_lower:
+        loc_param = "canberra"
+    elif "hobart" in loc_lower:
+        loc_param = "hobart"
+    elif "darwin" in loc_lower:
+        loc_param = "darwin"
+        
+    for page in range(1, max_pages + 1):
+        url = "https://www.ethicaljobs.com.au/jobs"
+        params = {"q": query}
+        if loc_param:
+            params["location"] = loc_param
+        if page > 1:
+            params["page"] = page
+            
+        try:
+            resp = session.get(url, params=params, timeout=20)
+            if resp.status_code != 200:
+                break
+                
+            soup = BeautifulSoup(resp.text, "lxml")
+            tiles = soup.find_all(attrs={"data-testid": "search-result-tile"})
+            if not tiles:
+                break
+                
+            for tile in tiles:
+                try:
+                    a = tile.find("a", href=lambda h: h and "/members/" in h)
+                    if not a:
+                        continue
+                    href = a.get("href", "")
+                    job_url = f"https://www.ethicaljobs.com.au{href}" if href.startswith("/") else href
+                    
+                    h2 = tile.find("h2")
+                    title = h2.get_text(strip=True) if h2 else ""
+                    
+                    company = ""
+                    if h2:
+                        company_el = h2.find_next_sibling("div")
+                        company = company_el.get_text(strip=True) if company_el else ""
+                        
+                    p_tags = tile.find_all("p")
+                    loc = location
+                    desc = ""
+                    
+                    if len(p_tags) >= 3:
+                        loc = p_tags[0].get_text(strip=True)
+                        if p_tags[1].get_text(strip=True).startswith(">"):
+                            loc += " " + p_tags[1].get_text(strip=True)
+                            desc = p_tags[2].get_text(strip=True)
+                        else:
+                            desc = p_tags[1].get_text(strip=True)
+                    elif len(p_tags) >= 1:
+                        desc = p_tags[-1].get_text(strip=True)
+                        
+                    sal_min, sal_max = _parse_salary(desc)
+                    
+                    if not title:
+                        continue
+                        
+                    jobs.append(_make_job(
+                        title=title, company=company, location=loc,
+                        description=desc, url=job_url,
+                        salary_min=sal_min, salary_max=sal_max,
+                        salary_currency="AUD", source="EthicalJobs",
+                        is_remote=_is_remote(title, desc, loc),
+                    ))
+                except Exception:
+                    continue
+                    
+            print(f"[EthicalJobs] Page {page}: {len(tiles)} tiles — total {len(jobs)}")
+            time.sleep(1.2)
+            
+        except Exception as e:
+            print(f"[EthicalJobs] Error p{page}: {e}")
+            break
+            
     return jobs
 
 
@@ -436,6 +548,7 @@ def fetch_all_jobs(
     include_indeed: bool = True,
     include_adzuna: bool = True,
     include_gradconnection: bool = False,
+    include_ethicaljobs: bool = True,
     selected_rss_feeds: list[str] | None = None,
     adzuna_app_id: str = "",
     adzuna_api_key: str = "",
@@ -457,6 +570,9 @@ def fetch_all_jobs(
 
     if include_gradconnection and country == "Australia":
         all_jobs.extend(fetch_gradconnection_jobs(keywords=keywords, location=loc))
+
+    if include_ethicaljobs:
+        all_jobs.extend(fetch_ethicaljobs_jobs(keywords=keywords, location=location or "Australia", max_pages=jora_pages))
 
     if include_adzuna and (adzuna_app_id or ADZUNA_APP_ID):
         all_jobs.extend(fetch_adzuna_jobs(

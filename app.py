@@ -10,7 +10,7 @@ import streamlit as st
 
 from src.parser        import parse_resume
 from src.scraper       import fetch_all_jobs
-from src.matcher       import score_jobs, generate_cover_letter
+from src.matcher       import score_jobs, generate_cover_letter, generate_interview_prep
 from src.ui_components import (
     render_job_card, render_skill_pills, render_metrics_row, section_header,
 )
@@ -130,6 +130,8 @@ def _init():
         "gap_report": "",
         "last_scan_time": 0.0,
         "trigger_autoscan": False,
+        "interview_prep": "",
+        "interview_prep_job_id": "",
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -169,8 +171,9 @@ with st.sidebar:
         inc_remote = st.checkbox("🌐 Remote", value=True,  help="Remote RSS feeds")
         inc_adzuna = st.checkbox("🟠 Adzuna", value=False, help="Requires API key")
         inc_grad   = st.checkbox("🎓 Grad",   value=False, help="GradConnection AU")
+        inc_ethical = st.checkbox("🌱 Ethical", value=True, help="EthicalJobs.com.au")
 
-    if inc_seek or inc_jora:
+    if inc_seek or inc_jora or inc_ethical:
         pages = st.slider("Pages per board", 1, 5, 2)
     else:
         pages = 2
@@ -252,6 +255,7 @@ with st.sidebar:
                     include_indeed=inc_indeed, include_remote=inc_remote,
                     include_adzuna=inc_adzuna and bool(st.session_state.adzuna_app_id),
                     include_gradconnection=inc_grad,
+                    include_ethicaljobs=inc_ethical,
                     selected_rss_feeds=selected_rss if selected_rss else None,
                     adzuna_app_id=st.session_state.adzuna_app_id,
                     adzuna_api_key=st.session_state.adzuna_api_key,
@@ -377,10 +381,11 @@ render_metrics_row([
 
 st.markdown("<br>", unsafe_allow_html=True)
 
-tab_jobs, tab_tracker, tab_cover, tab_gaps, tab_profile, tab_analytics, tab_export = st.tabs([
+tab_jobs, tab_tracker, tab_cover, tab_interview, tab_gaps, tab_profile, tab_analytics, tab_export = st.tabs([
     "🎯  Job Listings",
     "📋  Application Tracker",
     "💌  Cover Letter",
+    "🤝  Interview Prep",
     "🔍  Gap Analysis",
     "👤  My Profile",
     "📊  Analytics",
@@ -567,6 +572,50 @@ with tab_cover:
             st.download_button(
                 "⬇️  Download as .txt", st.session_state.cover_letter,
                 file_name="cover_letter.txt", mime="text/plain",
+                use_container_width=True,
+            )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 3.75 – INTERVIEW PREPARATION
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_interview:
+    section_header("🤝", "AI Interview Prep Guide", "Tailored interview coaching and preparation via Gemini")
+    
+    if not st.session_state.gemini_key:
+        st.warning("A Gemini API key is required. Add it in the sidebar under API Keys.")
+    elif not profile:
+        st.info("Upload your resume and run a scan first.")
+    elif not jobs_all:
+        st.info("Scan for jobs first.")
+    else:
+        ip_col1, ip_col2 = st.columns([2, 1])
+        with ip_col1:
+            job_options = {f"{j['title']} @ {j['company']} ({j['match_score']:.0f}%)": j
+                          for j in jobs_all[:50]}
+            selected_label = st.selectbox("Select a job for interview prep", list(job_options.keys()))
+            selected_job   = job_options[selected_label]
+        with ip_col2:
+            st.markdown("<div style='padding-top:28px;'></div>", unsafe_allow_html=True)
+            st.caption("Custom mock prep based on your profile & job description.")
+            
+        if st.button("✨ Generate Interview Prep Guide", use_container_width=True):
+            with st.spinner("Creating your custom prep guide…"):
+                guide = generate_interview_prep(
+                    resume_profile=profile,
+                    job=selected_job,
+                    api_key=st.session_state.gemini_key,
+                )
+            st.session_state.interview_prep        = guide
+            st.session_state.interview_prep_job_id = selected_job["id"]
+            st.rerun()
+            
+        if st.session_state.interview_prep:
+            st.markdown(f'<div class="cover-letter-box">{st.session_state.interview_prep}</div>',
+                        unsafe_allow_html=True)
+            st.download_button(
+                "⬇️  Download Prep Guide (.md)", st.session_state.interview_prep,
+                file_name="interview_prep_guide.md", mime="text/markdown",
                 use_container_width=True,
             )
 
